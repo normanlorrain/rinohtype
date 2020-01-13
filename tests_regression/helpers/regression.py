@@ -6,6 +6,7 @@
 # Public License v3. See the LICENSE file or http://www.gnu.org/licenses/.
 
 import pytest
+import pytest_check as check
 
 from pathlib import Path
 import logging
@@ -66,8 +67,8 @@ def render_doctree(doctree, out_filename, reference_path,
         check_pdf_links(reference_path / pdf_filename)
     with in_directory(output_dir):
         _, _, _, badlinks, _, _, outlines = check_pdf_links(pdf_filename)
-        pytest.assume(badlinks == [])
-        pytest.assume(ref_outlines == outlines)
+        check.equal(badlinks, [])
+        check.equal(ref_outlines, outlines)
         log.debug("reference_path: {}".format(reference_path) )
         log.debug("pdf_filename: {}".format(pdf_filename))
 

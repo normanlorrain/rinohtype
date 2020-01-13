@@ -9,6 +9,7 @@
 import os
 
 import pytest
+import pytest_check as check
 
 from diffpdf import diff_pdf
 from pdf_linkchecker import check_pdf_links
@@ -34,8 +35,8 @@ def test_rstdemo():
     with in_directory(out_dir):
         document.render('demo')
         _, _, _, badlinks, _, _, outlines = check_pdf_links(pdf_filename)
-        pytest.assume(badlinks == ['table-of-contents'])
-        pytest.assume(ref_outlines == outlines)
+        check.equal(badlinks , ['table-of-contents'])
+        check.equal(ref_outlines, outlines)
         if not diff_pdf(TEST_DIR / 'reference' / 'demo.pdf', 'demo.pdf'):
             pytest.fail('The generated PDF is different from the reference '
                         'PDF.\nGenerated files can be found in {}'
