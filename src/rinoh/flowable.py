@@ -27,7 +27,7 @@ from .dimension import Dimension, PT, DimensionBase
 from .draw import ShapeStyle, Rectangle, Line, LineStyle, Stroke
 from .layout import (InlineDownExpandingContainer, VirtualContainer,
                      MaybeContainer, ContainerOverflow, EndOfContainer,
-                     PageBreakException)
+                     PageBreakException, ReflowRequired)
 from .style import Styled, Style
 from .text import StyledText
 from .util import ReadAliasAttribute
@@ -87,8 +87,6 @@ class FlowableStyle(Style):
                                               "flowable's borders")
     hide = Attribute(Bool, False, 'Suppress rendering the flowable')
 
-    default_base = None
-
 
 class FlowableState(object):
     """Stores a flowable's rendering state, which can be copied.
@@ -110,12 +108,12 @@ class Flowable(Styled):
     """A document element that can be "flowed" into a container on the page.
 
     A flowable can adapt to the width of the container, or it can horizontally
-    align itself in the container (see :class:`HorizontallyAlignedFlowable`).
+    align itself in the container.
 
     Args:
       align (HorizontalAlignment): horizontal alignment of the flowable
-      width (DimensionBase or None): the width of the table. If ``None``,
-          the width of the flowable is automatically determined.
+      width (FlowableWidth or DimensionBase): the width of the flowable.
+
     """
 
     style_class = FlowableStyle
@@ -323,11 +321,8 @@ class DummyFlowable(Flowable):
         super().__init__(id=id, parent=parent)
 
     def get_style(self, attribute, flowable_target):
-        if attribute == 'keep_with_next':
-            return True
-        elif attribute == 'hide':
-            return False
-        raise TypeError
+        return dict(keep_with_next=True,
+                    hide=False)[attribute]
 
     def flow(self, container, last_descender, state=None, **kwargs):
         return 0, 0, last_descender
@@ -776,7 +771,8 @@ class Float(Flowable):
             if id not in container.document.floats:
                 super().flow(container.float_space, None)
                 container.document.floats.add(id)
-                container.page.check_overflow()
+                if not container.page.check_overflow():
+                    raise ReflowRequired
             return 0, 0, last_descender
         else:
             return super().flow(container, last_descender, state=state,

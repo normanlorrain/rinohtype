@@ -17,26 +17,19 @@ except ImportError:
 
 from .attribute import OverrideDefault
 from .color import HexColor
-from .font.style import BOLD, ITALIC
+from .font.style import FontWeight, FontSlant
 from .paragraph import Paragraph, ParagraphStyle
 from .style import StyledMatcher, StyleSheet
 from .text import SingleStyledText, TextStyle
 from .warnings import warn
 
 
-__all__ = ['CodeBlock', 'CodeBlockStyle', 'Token',
-           'pygments_style_to_stylesheet']
-
-
-class CodeBlockStyle(ParagraphStyle):
-    hyphenate = OverrideDefault(False)
-    ligatures = OverrideDefault(False)
+__all__ = ['CodeBlock', 'Token', 'pygments_style_to_stylesheet']
 
 
 class CodeBlock(Paragraph):
     """Paragraph with syntax highlighting"""
 
-    style_class = CodeBlockStyle
     significant_whitespace = True
 
     def __init__(self, text, language=None, id=None, style=None, parent=None,
@@ -75,10 +68,11 @@ class Token(SingleStyledText):
         self.type = type
 
     def __repr__(self):
-        """Return a representation of this single-styled text; the text string
+        """Return a representation of this token; the text string
         along with a representation of its :class:`TextStyle`."""
-        return "{0}('{1}', type={2})".format(self.__class__.__name__,
-                                              self.text(None), self.type)
+        style = ', style={}'.format(self.style) if self.style else ''
+        return "{}('{}', type={}{})".format(self.__class__.__name__,
+                                            self.text(None), self.type, style)
 
     def _short_repr_kwargs(self, flowable_target):
         yield 'type={}'.format(self.type)
@@ -120,9 +114,9 @@ def pygments_style_to_stylesheet(style, base=None):
         matcher[style_name] = Token.like(type=token_type)
         style_attributes = {}
         if style['italic']:
-            style_attributes['font_slant'] = ITALIC
+            style_attributes['font_slant'] = FontSlant.ITALIC
         if style['bold']:
-            style_attributes['font_weight'] = BOLD
+            style_attributes['font_weight'] = FontWeight.BOLD
         if style['color']:
             style_attributes['font_color'] = HexColor(style['color'])
         # TODO: underline, bgcolor, border, roman, sans, mono

@@ -8,21 +8,11 @@
 """
 Classes for describing styled text:
 
+* :class:`StyledText`: Base class for styled text.
 * :class:`SingleStyledText`: Text of a single style.
 * :class:`MixedStyledText`: Text where different substrings can have different
                             styles.
-* :class:`LiteralText`: Text that is typeset as is, including newlines and tabs.
 * :class:`TextStyle`: Style class specifying the font and other styling of text.
-
-A number of :class:`MixedStyledText` subclasses are provided for changing a
-single style attribute of the passed text:
-
-* :class:`Bold`
-* :class:`Italic`
-* :class:`Emphasized`
-* :class:`SmallCaps`
-* :class:`Superscript`
-* :class:`Subscript`
 
 Some characters with special properties and are represented by special classes:
 
@@ -49,8 +39,9 @@ from .font import Typeface
 from .fonts import adobe14
 from .font.style import (FontWeight, FontSlant, FontWidth, FontVariant,
                          TextPosition)
-from .style import Style, Styled, StyledMeta, PARENT_STYLE, StyleException
-from .util import NotImplementedAttribute, PeekIterator
+from .style import Style, Styled, StyledMeta
+from .util import NotImplementedAttribute
+
 
 __all__ = ['TextStyle', 'StyledText', 'WarnInline', 'SingleStyledText',
            'MixedStyledText', 'ConditionalMixedStyledText', 'Space',
@@ -98,8 +89,6 @@ class TextStyle(Style):
     hyphen_lang = Attribute(Locale, 'en_US', 'Language to use for hyphenation. '
                                              'Accepts locale codes such as '
                                              "'en_US'")
-
-    default_base = PARENT_STYLE
 
 
 class CharacterLike(Styled):
@@ -228,18 +217,17 @@ class StyledText(Styled, AcceptNoneAttributeType):
     def paragraph(self):
         return self.parent.paragraph
 
+    def fallback_to_parent(self, attribute):
+        return attribute != 'position'
+
     position = {TextPosition.SUPERSCRIPT: 1 / 3,
                 TextPosition.SUBSCRIPT: - 1 / 6}
     position_size = 583 / 1000
 
     def is_script(self, container):
         """Returns `True` if this styled text is super/subscript."""
-        try:
-            style = self._style(container)
-            return style.get_value('position',
-                                   container) != TextPosition.NORMAL
-        except StyleException:
-            return False
+        position = self.get_style('position', container)
+        return position != TextPosition.NORMAL
 
     def script_level(self, container):
         """Nesting level of super/subscript."""
@@ -259,15 +247,11 @@ class StyledText(Styled, AcceptNoneAttributeType):
 
     def y_offset(self, container):
         """Vertical baseline offset (up is positive)."""
-        offset = (self.parent.y_offset(container)\
+        offset = (self.parent.y_offset(container)
                   if hasattr(self.parent, 'y_offset') else 0)
         if self.is_script(container):
-            style = self._style(container)
-            offset += (self.parent.height(container) *
-                       self.position[style.position])
-            # The Y offset should only change once for the nesting level
-            # where the position style is set, hence we don't recursively
-            # get the position style using self.get_style('position')
+            position = self.get_style('position', container)
+            offset += self.parent.height(container) * self.position[position]
         return offset
 
     @property

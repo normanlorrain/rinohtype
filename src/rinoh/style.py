@@ -17,7 +17,7 @@ Base classes and exceptions for styled document elements.
                                delegated to the parent :class:`Styled`
 """
 
-import os
+
 import string
 
 from ast import literal_eval
@@ -27,43 +27,17 @@ from operator import attrgetter
 from pathlib import Path
 
 from .attribute import (WithAttributes, AttributesDictionary,
-                        RuleSet, RuleSetFile)
+                        RuleSet, RuleSetFile, Configurable,
+                        DefaultValueException)
 from .element import DocumentElement
 from .resource import Resource
-from .util import cached, unique, all_subclasses, NotImplementedAttribute
+from .util import (cached, unique, all_subclasses, NotImplementedAttribute,
+                   class_property)
 from .warnings import warn
 
 
 __all__ = ['Style', 'Styled', 'StyledMatcher', 'StyleSheet', 'StyleSheetFile',
-           'ClassSelector', 'ContextSelector', 'PARENT_STYLE',
-           'StyleException']
-
-
-class StyleException(Exception):
-    """Style lookup requires special handling."""
-
-
-class ParentStyleException(StyleException):
-    """Style attribute not found. Consult the parent :class:`Styled`."""
-
-
-class BaseStyleException(StyleException):
-    """The `attribute` is not specified in this :class:`Style`. Try to find the
-    attribute in a base style instead."""
-
-    def __init__(self, style, attribute):
-        self.style = style
-        self.attribute = attribute
-
-
-class DefaultStyleException(StyleException):
-    """The attribute is not specified in this :class:`Style` or any of its base
-    styles. Return the default value for the attribute."""
-
-
-class NoStyleException(StyleException):
-    """No style matching the given :class:`Styled` was found in the
-    :class:`StyleSheet`."""
+           'ClassSelector', 'ContextSelector', 'PARENT_STYLE']
 
 
 class StyleMeta(WithAttributes):
@@ -85,8 +59,6 @@ class Style(AttributesDictionary, metaclass=StyleMeta):
 
     """
 
-    default_base = None
-
     def __init__(self, base=None, **attributes):
         """Style attributes are as passed as keyword arguments. Supported
         attributes are the :class:`Attribute` class attributes of this style
@@ -99,7 +71,7 @@ class Style(AttributesDictionary, metaclass=StyleMeta):
         If `base` is a :class:`str`, it is used to look up the base style in
         the :class:`StyleSheet` this style is defined in."""
         super().__init__(base, **attributes)
-        self._name = None
+        self.name = None
 
     def __repr__(self):
         """Return a textual representation of this style."""
@@ -118,67 +90,17 @@ class Style(AttributesDictionary, metaclass=StyleMeta):
         else:
             return super().__getattr__(attribute)
 
-    def __getitem__(self, attribute):
-        """Return the value of `attribute`.
-
-        If the attribute is not specified in this :class:`Style`, find it in
-        this style's base styles (hierarchically), or ultimately raise a
-        :class:`DefaultValueException`."""
-        try:
-            return super().__getitem__(attribute)
-        except KeyError:
-            if isinstance(self.base, Style):
-                return self.base[attribute]
-            else:
-                raise BaseStyleException(self, attribute)
-
-    @property
-    def name(self):
-        return self._name
-
-    @name.setter
-    def name(self, name):
-        if name in SPECIAL_STYLES:
-            raise ValueError("The '{}' style name is reserved.".format(name))
-        self._name = name
+    @classmethod
+    def get_ruleset(self, document):
+        return document.stylesheet
 
 
-class SpecialStyle(Style):
-    """Special style that delegates attribute lookups by raising an
-    exception on each attempt to access an attribute."""
-
-    exception = NotImplementedAttribute()
-
-    def __repr__(self):
-        return self.__class__.__name__
-
-    def __getitem__(self, attribute):
-        raise self.exception
-
-    def __bool__(self):
-        return True
-
-
-class ParentStyle(SpecialStyle):
-    exception = ParentStyleException
-
-
-class DefaultStyle(SpecialStyle):
-    exception = DefaultStyleException
+class ParentStyle(Style):
+    """Style that forwards attribute lookups to the parent of the
+    :class:`Styled` from which the lookup originates."""
 
 
 PARENT_STYLE = ParentStyle()
-"""Style that forwards style lookups to the parent of the :class:`Styled`
-from which the lookup originates."""
-
-
-DEFAULT_STYLE = DefaultStyle()
-"""Style to use as a base for styles that do not extend the style of the same
-name in the base style sheet."""
-
-
-SPECIAL_STYLES = dict(DEFAULT_STYLE=DEFAULT_STYLE,
-                      PARENT_STYLE=PARENT_STYLE)
 
 
 class Selector(object):
@@ -221,7 +143,10 @@ class Selector(object):
     def referenced_selectors(self):
         raise NotImplementedError
 
-    def match(self, styled, container):
+    def flatten(self, document):
+        raise NotImplementedError
+
+    def match(self, styled, document):
         raise NotImplementedError
 
 
@@ -247,12 +172,12 @@ class SelectorWithPriority(Selector):
     def referenced_selectors(self):
         return self.selector.referenced_selectors
 
-    def flatten(self, container):
-        flattened_selector = self.selector.flatten(container)
+    def flatten(self, document):
+        flattened_selector = self.selector.flatten(document)
         return flattened_selector.pri(self.priority)
 
-    def match(self, styled, container):
-        score = self.selector.match(styled, container)
+    def match(self, styled, document):
+        score = self.selector.match(styled, document)
         if score:
             score = Specificity(self.priority, 0, 0, 0, 0) + score
         return score
@@ -268,7 +193,7 @@ class EllipsisSelector(Selector):
         return
         yield
 
-    def flatten(self, container):
+    def flatten(self, document):
         return self
 
 
@@ -286,8 +211,8 @@ class SelectorByName(SingleSelector):
     def referenced_selectors(self):
         yield self.name
 
-    def flatten(self, container):
-        return container.document.stylesheet.get_selector(self.name)
+    def flatten(self, document):
+        return document.stylesheet.get_selector(self.name)
 
     def get_styled_class(self, stylesheet_or_matcher):
         selector = stylesheet_or_matcher.get_selector(self.name)
@@ -297,9 +222,9 @@ class SelectorByName(SingleSelector):
         selector = matcher.by_name[self.name]
         return selector.get_style_name(matcher)
 
-    def match(self, styled, container):
-        selector = container.document.stylesheet.get_selector(self.name)
-        return selector.match(styled, container)
+    def match(self, styled, document):
+        selector = document.stylesheet.get_selector(self.name)
+        return selector.match(styled, document)
 
 
 class ClassSelectorBase(SingleSelector):
@@ -311,13 +236,13 @@ class ClassSelectorBase(SingleSelector):
         return
         yield
 
-    def flatten(self, container):
+    def flatten(self, document):
         return self
 
     def get_style_name(self, matcher):
         return self.style_name
 
-    def match(self, styled, container):
+    def match(self, styled, document):
         if not isinstance(styled, self.cls):
             return None
         class_match = 2 if type(styled) == self.cls else 1
@@ -356,10 +281,10 @@ class ContextSelector(Selector):
             for name in selector.referenced_selectors:
                 yield name
 
-    def flatten(self, container):
+    def flatten(self, document):
         return type(self)(*(child_selector for selector in self.selectors
                             for child_selector
-                            in selector.flatten(container).selectors))
+                            in selector.flatten(document).selectors))
 
     def get_styled_class(self, stylesheet_or_matcher):
         return self.selectors[-1].get_styled_class(stylesheet_or_matcher)
@@ -367,7 +292,7 @@ class ContextSelector(Selector):
     def get_style_name(self, matcher):
         return self.selectors[-1].get_style_name(matcher)
 
-    def match(self, styled, container):
+    def match(self, styled, document):
         def styled_and_parents(element):
             while element is not None:
                 yield element
@@ -382,13 +307,13 @@ class ContextSelector(Selector):
                 element = next(elements)                # NoMoreParentElement
                 if isinstance(selector, EllipsisSelector):
                     selector = next(selectors)          # StopIteration
-                    while not selector.match(element, container):
+                    while not selector.match(element, document):
                         element = next(elements)        # NoMoreParentElement
             except NoMoreParentElement:
                 return None
             except RuntimeError:
                 break
-            score = selector.match(element, container)
+            score = selector.match(element, document)
             if not score:
                 return None
             total_score += score
@@ -447,7 +372,7 @@ class StyledMeta(type, ClassSelectorBase):
         return ClassSelector(cls, style_name, **attributes)
 
 
-class Styled(DocumentElement, metaclass=StyledMeta):
+class Styled(DocumentElement, Configurable, metaclass=StyledMeta):
     """A document element who's style can be configured.
 
     Args:
@@ -456,6 +381,10 @@ class Styled(DocumentElement, metaclass=StyledMeta):
             document's style sheet by means of selectors.
 
     """
+
+    @class_property
+    def configuration_class(cls):
+        return cls.style_class
 
     style_class = None
     """The :class:`Style` subclass that corresponds to this :class:`Styled`
@@ -521,67 +450,21 @@ class Styled(DocumentElement, metaclass=StyledMeta):
         except AttributeError:
             return 0
 
-    @cached
-    def get_style(self, attribute, flowable_target):
-        try:
-            return self.get_style_recursive(attribute, flowable_target)
-        except DefaultStyleException:
-            return self.style_class._get_default(attribute)
+    def configuration_name(self, document):
+        ruleset = self.configuration_class.get_ruleset(document)
+        return ruleset.find_style(self, document)
 
-    def get_base_style_recursive(self, exception, flowable_target, stylesheet):
-        base_name = exception.style.base
-        if base_name is None:
-            stylesheet = stylesheet.base
-            if stylesheet is None:
-                raise DefaultStyleException
-            try:
-                base_style = stylesheet[exception.style.name]
-            except KeyError:
-                raise DefaultStyleException
-        else:
-            try:
-                base_style = stylesheet[base_name]
-            except KeyError:
-                raise ValueError("The base style '{}' for style '{}' could "
-                                 "not be found in the style sheet or base "
-                                 "style sheets".format(base_name,
-                                                       exception.style.name))
-        try:
-            return base_style.get_value(exception.attribute, stylesheet)
-        except ParentStyleException:
-            return self.parent.get_style_recursive(exception.attribute,
-                                                   flowable_target)
-        except BaseStyleException as exc:
-            return self.get_base_style_recursive(exc, flowable_target,
-                                                 stylesheet)
-
-    def get_style_recursive(self, attribute, flowable_target):
-        stylesheet = flowable_target.document.stylesheet
-        try:
-            try:
-                style = self._style(flowable_target)
-                return style.get_value(attribute, stylesheet)
-            except NoStyleException:
-                if self.style_class.default_base == PARENT_STYLE:
-                    raise ParentStyleException
-                else:
-                    raise DefaultStyleException
-        except ParentStyleException:
-            parent = self.parent
-            try:
-                return parent.get_style(attribute, flowable_target)
-            except KeyError:  # 'attribute' is not supported by the parent
-                return parent.get_style_recursive(attribute, flowable_target)
-        except BaseStyleException as exception:
-            return self.get_base_style_recursive(exception, flowable_target,
-                                                 stylesheet)
+    def fallback_to_parent(self, attribute):
+        return isinstance(self.style, ParentStyle)
 
     @cached
-    def _style(self, container):
+    def get_style(self, attribute, container):
         if isinstance(self.style, Style):
-            return self.style
-        else:
-            return container.document.stylesheet.find_style(self, container)
+            try:
+                return self.style[attribute]
+            except KeyError:
+                pass
+        return self.get_config_value(attribute, container.document)
 
     @property
     def has_class(self):
@@ -668,15 +551,15 @@ class StyledMatcher(dict):
         for name, selector in dict(iterable or (), **kwargs).items():
             self[name] = selector
 
-    def match(self, styled, container):
+    def match(self, styled, document):
         for cls in type(styled).__mro__:
             if cls not in self:
                 continue
             style_str = styled.style if isinstance(styled.style, str) else None
             for style in set((style_str, None)):
                 for name, selector in self[cls].get(style, {}).items():
-                    selector = selector.flatten(container)
-                    specificity = selector.match(styled, container)
+                    selector = selector.flatten(document)
+                    specificity = selector.match(styled, document)
                     if specificity:
                         yield Match(name, specificity)
 
@@ -752,6 +635,14 @@ class StyleSheet(RuleSet, Resource):
                 'sheets>` or the filename of a stylesheet file (with the '
                 '``{}`` extension)'.format(cls.extension))
 
+    def _get_value_lookup(self, styled, attribute, document):
+        try:
+            return super()._get_value_lookup(styled, attribute, document)
+        except DefaultValueException:
+            if styled.fallback_to_parent(attribute):
+                return self._get_value_lookup(styled.parent, attribute, document)
+            raise
+
     def get_styled(self, name):
         return self.get_selector(name).get_styled_class(self)
 
@@ -781,31 +672,25 @@ class StyleSheet(RuleSet, Resource):
             else:
                 raise KeyError("No selector found for style '{}'".format(name))
 
-    def find_matches(self, styled, container):
-        for match in self.matcher.match(styled, container):
+    def find_matches(self, styled, document):
+        for match in self.matcher.match(styled, document):
             yield match
         if self.base is not None:
-            for match in self.base.find_matches(styled, container):
-                yield match
+            yield from self.base.find_matches(styled, document)
 
-    def find_style(self, styled, container):
-        matches = sorted(self.find_matches(styled, container),
+    def find_style(self, styled, document):
+        matches = sorted(self.find_matches(styled, document),
                          key=attrgetter('specificity'), reverse=True)
-        if len(matches) > 1:
-            last_match = matches[0]
-            for match in matches[1:]:
-                if (match.specificity == last_match.specificity
-                        and match.style_name != last_match.style_name):
-                    styled.warn('Multiple selectors match with the same '
-                                'specificity. See the style log for details.',
-                                container)
-                last_match = match
+        last_match = Match(None, ZERO_SPECIFICITY)
         for match in matches:
-            try:
-                return self[match.style_name]
-            except KeyError:
-                pass
-        raise NoStyleException
+            if (match.specificity == last_match.specificity
+                    and match.style_name != last_match.style_name):
+                styled.warn('Multiple selectors match with the same '
+                            'specificity. See the style log for details.')
+            if self.contains(match.style_name):
+                return match.style_name
+            last_match = match
+        raise DefaultValueException
 
     def write(self, base_filename):
         from configparser import ConfigParser
@@ -825,12 +710,11 @@ class StyleSheet(RuleSet, Resource):
                           else ':' + type(style).__name__.replace('Style', ''))
             config.add_section(style_name + classifier)
             section = config[style_name + classifier]
-            if style.base is not style.default_base:
-                section['base'] = str(style.base)
+            section['base'] = str(style.base)
             for name in type(style).supported_attributes:
                 try:
                     section[name] = str(style[name])
-                except StyleException:  # default
+                except KeyError:  # default
                     section[';' + name] = str(style._get_default(name))
         with open(base_filename + self.extension, 'w') as file:
             config.write(file, space_around_delimiters=True)
@@ -877,10 +761,7 @@ class StyleSheetFile(RuleSetFile, StyleSheet):
             style_cls = styled_class.style_class
         else:
             style_cls = self.get_entry_class(style_name)
-        attribute_values = {name: SPECIAL_STYLES.get(val.strip(), val.strip())
-                                  if name == 'base' else val
-                            for name, val in items}
-        self[style_name] = style_cls(**attribute_values)
+        self[style_name] = style_cls(**dict(items))
 
 
 class StyleParseError(Exception):
@@ -1086,7 +967,7 @@ class StyleLog(object):
         self.entries = []
 
     def log_styled(self, styled, container, continued, custom_message=None):
-        matches = self.stylesheet.find_matches(styled, container)
+        matches = self.stylesheet.find_matches(styled, container.document)
         log_entry = StyleLogEntry(styled, container, matches, continued,
                                   custom_message)
         self.entries.append(log_entry)
@@ -1139,15 +1020,15 @@ class StyleLog(object):
                                  key=attrgetter('specificity'))
                 if matches:
                     for match in matches:
-                        try:
-                            _ = self.stylesheet[match.style_name]
+                        if self.stylesheet.contains(match.style_name):
                             if first:
-                                style = _
+                                name = match.style_name
+                                style = self.stylesheet.get_configuration(name)
                                 label = '>'
                                 first = False
                             else:
                                 label = ' '
-                        except KeyError:
+                        else:
                             label = 'x'
                         specificity = ','.join(str(score)
                                                for score in match.specificity)

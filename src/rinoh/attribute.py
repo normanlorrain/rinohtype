@@ -22,8 +22,8 @@ from .util import (NamedDescriptor, WithNamedDescriptors,
 
 
 __all__ = ['AttributeType', 'AcceptNoneAttributeType', 'OptionSet', 'Attribute',
-           'OverrideDefault', 'AttributesDictionary', 'RuleSet', 'RuleSetFile',
-           'Bool', 'Integer', 'ParseError', 'Var']
+           'OverrideDefault', 'AttributesDictionary', 'Configurable',
+           'RuleSet', 'RuleSetFile', 'Bool', 'Integer', 'ParseError', 'Var']
 
 
 class AttributeType(object):
@@ -277,10 +277,8 @@ class WithAttributes(WithNamedDescriptors):
 
 
 class AttributesDictionary(OrderedDict, metaclass=WithAttributes):
-    default_base = None
-
     def __init__(self, base=None, **attributes):
-        self.base = base or self.default_base
+        self.base = base
         for name, value in attributes.items():
             attributes[name] = self.validate_attribute(name, value, True)
         super().__init__(attributes)
@@ -318,13 +316,29 @@ class AttributesDictionary(OrderedDict, metaclass=WithAttributes):
             pass
         raise KeyError(name)
 
-    def get_value(self, attribute, rule_set):
-        value = self[attribute]
-        if isinstance(value, Var):
-            accepted_type = self.attribute_definition(attribute).accepted_type
-            value = value.get(accepted_type, rule_set)
-            value = self.validate_attribute(attribute, value, False)
-        return value
+    @classmethod
+    def get_ruleset(self):
+        raise NotImplementedError
+
+
+class DefaultValueException(Exception):
+    pass
+
+
+class Configurable(object):
+    configuration_class = NotImplementedAttribute()
+
+    def configuration_name(self, document):
+        raise NotImplementedError
+
+    def get_config_value(self, attribute, document):
+        ruleset = self.configuration_class.get_ruleset(document)
+        return ruleset.get_value_for(self, attribute, document)
+
+
+class BaseConfigurationException(Exception):
+    def __init__(self, base_name):
+        self.name = base_name
 
 
 class RuleSet(OrderedDict):
@@ -336,12 +350,15 @@ class RuleSet(OrderedDict):
         self.base = base
         self.variables = OrderedDict()
 
-    def __getitem__(self, name):
+    def contains(self, name):
+        return name in self or (self.base and self.base.contains(name))
+
+    def get_configuration(self, name):
         try:
-            return super().__getitem__(name)
+            return self[name]
         except KeyError:
-            if self.base is not None:
-                return self.base[name]
+            if self.base:
+                return self.base.get_configuration(name)
             raise
 
     def __setitem__(self, name, style):
@@ -353,25 +370,60 @@ class RuleSet(OrderedDict):
     def __call__(self, name, **kwargs):
         self[name] = self.get_entry_class(name)(**kwargs)
 
-    def __str__(self):
+    def __repr__(self):
         return '{}({})'.format(type(self).__name__, self.name)
 
-    def get_variable(self, name, accepted_type):
+    def __str__(self):
+        return repr(self)
+
+    def __bool__(self):
+        return True
+
+    def get_variable(self, configurable, attribute, variable):
         try:
-            return self._get_variable(name, accepted_type)
+            value =  self.variables[variable.name]
         except KeyError:
             if self.base:
-                return self.base.get_variable(name, accepted_type)
+                return self.base.get_variable(configurable, attribute, variable)
             else:
                 raise VariableNotDefined("Variable '{}' is not defined"
-                                         .format(name))
-
-    def _get_variable(self, name, accepted_type):
-        return self.variables[name]
+                                         .format(variable.name))
+        config = configurable.configuration_class
+        return config.validate_attribute(attribute, value, False)
 
     def get_entry_class(self, name):
         raise NotImplementedError
 
+    def _get_value_recursive(self, name, attribute, document):
+        if name in self:
+            entry = self[name]
+            if attribute in entry:
+                return entry[attribute]
+            elif isinstance(entry.base, str):
+                raise BaseConfigurationException(entry.base)
+            elif entry.base is not None:
+                return entry.base[attribute]
+        if self.base:
+            return self.base._get_value_recursive(name, attribute, document)
+        raise DefaultValueException
+
+    def _get_value_handle_base(self, name, attribute, document):
+        try:
+            return self._get_value_recursive(name, attribute, document)
+        except BaseConfigurationException as exc:
+            return self._get_value_handle_base(exc.name, attribute, document)
+
+    def _get_value_lookup(self, configurable, attribute, document):
+        name = configurable.configuration_name(document)
+        return self._get_value_handle_base(name, attribute, document)
+
+    def get_value_for(self, configurable, attribute, document):
+        try:
+            value = self._get_value_lookup(configurable, attribute, document)
+        except DefaultValueException:
+            value = configurable.configuration_class._get_default(attribute)
+        return (self.get_variable(configurable, attribute, value)
+                if isinstance(value, Var) else value)
 
 
 class RuleSetFile(RuleSet):
@@ -473,6 +525,9 @@ class Var(object):
 
     def __str__(self):
         return '$({})'.format(self.name)
+
+    def __eq__(self, other):
+        return self.name == other.name
 
     def get(self, accepted_type, rule_set):
         return rule_set.get_variable(self.name, accepted_type)

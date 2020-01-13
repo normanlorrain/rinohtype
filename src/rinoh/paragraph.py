@@ -29,7 +29,7 @@ from .flowable import Flowable, FlowableStyle, FlowableState, FlowableWidth
 from .font import MissingGlyphException
 from .hyphenator import Hyphenator
 from .inline import InlineFlowableException
-from .layout import EndOfContainer
+from .layout import EndOfContainer, ContainerOverflow
 from .text import TextStyle, MixedStyledText, SingleStyledText, ESCAPE
 from .util import all_subclasses, ReadAliasAttribute
 
@@ -651,7 +651,10 @@ class ParagraphBase(Flowable):
             if container.remaining_height < total_advance:
                 raise EndOfContainer(saved_state)
             assert container.advance2(advance)
-            line.typeset(container, text_align, last_line)
+            try:
+                line.typeset(container, text_align, last_line)
+            except ContainerOverflow:
+                raise EndOfContainer(saved_state)
             assert container.advance2(- descender)
             state.initial = False
             saved_state = copy(state)
@@ -707,6 +710,7 @@ class Paragraph(MixedStyledText, ParagraphBase):
     """
 
     style_class = ParagraphBase.style_class
+    fallback_to_parent = ParagraphBase.fallback_to_parent
 
     def text(self, container):
         return self
@@ -941,8 +945,13 @@ class Line(list):
         else:   # abort if the line is empty
             return
 
+        descender = self.descender(container)
+        # Temporarily advance with descender so that overflow on
+        # before_placing (e.g. footnotes) can be detected
+        assert container.advance2(- descender)
         for glyph_span in self:
             glyph_span.span.before_placing(container)
+        assert container.advance2(descender)
 
         # horizontal displacement
         left = self.indent
