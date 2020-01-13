@@ -8,6 +8,8 @@
 import pytest
 
 from pathlib import Path
+import logging
+log = logging.getLogger(__name__)
 
 from sphinx.application import Sphinx
 
@@ -66,6 +68,9 @@ def render_doctree(doctree, out_filename, reference_path,
         _, _, _, badlinks, _, _, outlines = check_pdf_links(pdf_filename)
         pytest.assume(badlinks == [])
         pytest.assume(ref_outlines == outlines)
+        log.debug("reference_path: {}".format(reference_path) )
+        log.debug("pdf_filename: {}".format(pdf_filename))
+
         if not diff_pdf(reference_path / pdf_filename, pdf_filename):
             pytest.fail('The generated PDF is different from the reference '
                         'PDF.\nGenerated files can be found in {}'

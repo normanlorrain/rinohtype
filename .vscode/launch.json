@@ -10,8 +10,10 @@
             "request": "launch",
             "module": "pytest",
             "args": [
+                "-x",
+                "--pdb",
                 "-k",
-                "test_rst"
+                "border_paragraph"
             ]
             //"pythonPath": "${workspaceFolder}/.venv35/bin/python"
         }
